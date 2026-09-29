@@ -87,10 +87,15 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Run unit tests and assemble Debug APK
+      - name: Run unit tests
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+          ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Assemble Debug APK
+        id: assemble-debug
+        if: always()
+        run: ./gradlew :app:assembleDebug --stacktrace
 
       - name: Upload unit-test reports
         if: always()
@@ -104,7 +109,7 @@ jobs:
           retention-days: 14
 
       - name: Upload Debug APK
-        if: success()
+        if: steps.assemble-debug.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: orangechat-debug-${{ github.sha }}
