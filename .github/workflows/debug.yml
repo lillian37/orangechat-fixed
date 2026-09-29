@@ -45,6 +45,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Initialize Material Color Utilities submodule
+        run: git submodule update --init --depth 1 material3/material-color-utilities
+
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
