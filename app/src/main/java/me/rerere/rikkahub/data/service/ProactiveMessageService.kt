@@ -88,6 +88,65 @@ import org.koin.core.component.inject
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
+/**
+ * Marker carried by the synthetic user message used to wake the assistant.
+ * It makes the origin explicit without pretending that the user sent a chat message.
+ */
+internal const val PROGRAMMATIC_WAKEUP_MARKER = "[程序触发的主动消息：以下内容不是用户输入]"
+
+/**
+ * Build the complete message list that is passed through input transformers for a proactive turn.
+ *
+ * Keeping the system prompt, conversation history, and synthetic wake-up instruction together is
+ * important: lorebook matching uses the non-system messages and may insert more than one message.
+ * The caller must keep the returned list intact instead of selecting one transformed element.
+ */
+internal fun buildProactiveInputMessages(
+    systemPrompt: String,
+    historyMessages: List<UIMessage>,
+    wakeupInstruction: String,
+): List<UIMessage> = buildList {
+    add(UIMessage.system(systemPrompt))
+    addAll(historyMessages)
+    add(UIMessage.user("$PROGRAMMATIC_WAKEUP_MARKER\n$wakeupInstruction"))
+}
+
+/**
+ * Apply the same input-transform and role-normalization boundary used before a proactive model
+ * call. Keeping this as one testable boundary prevents tests from only checking an intermediate
+ * lorebook result while the actual model input still loses a message later in the pipeline.
+ */
+internal suspend fun buildProactiveModelMessages(
+    messages: List<UIMessage>,
+    transformers: List<InputMessageTransformer>,
+    context: Context,
+    model: Model,
+    assistant: Assistant,
+    settings: Settings,
+): List<UIMessage> {
+    val transformedMessages = messages.transforms(
+        transformers = transformers,
+        context = context,
+        model = model,
+        assistant = assistant,
+        settings = settings,
+    )
+    return mergeAdjacentSameRoleMessages(transformedMessages)
+}
+
+/** Merge adjacent roles before handing messages to providers that require alternating roles. */
+internal fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMessage> {
+    if (messages.size < 2) return messages
+    return messages.fold(emptyList()) { acc, msg ->
+        val prev = acc.lastOrNull()
+        if (prev != null && prev.role == msg.role) {
+            acc.dropLast(1) + prev.copy(parts = prev.parts + msg.parts)
+        } else {
+            acc + msg
+        }
+    }
+}
+
 class ProactiveMessageService : KoinComponent {
     private val settingsStore: SettingsStore by inject()
     private val conversationRepository: ConversationRepository by inject()
@@ -573,38 +632,29 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 构建系统提示词（包含记忆 + 上下文，都放在最后面避免被网关淹没）
                 val systemPrompt = buildSystemPrompt(assistant, settings, idleMinutes, proactiveSetting.jumpIdleThresholdMinutes, isFromDeviceEvent, if (isFromDeviceEvent) deviceEventContext else contextStr)
 
-                // user message 只放简短指令（上下文已在系统提示词中）
-                val userMessage = UIMessage(
-                    role = MessageRole.USER,
-                    parts = listOf(UIMessagePart.Text(
-                        if (isFromDeviceEvent) {
-                            "请根据以上用户动向决定是否发消息。没什么好说的就回复 [PASS]。"
-                        } else {
-                            "请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。"
-                        }
-                    ))
-                )
+                // user message 只放简短指令（上下文已在系统提示词中）。它是程序合成的唤醒，
+                // 不是用户刚刚发送的消息；显式标记来源，避免模型把它当成用户原话。
+                val wakeupInstruction = if (isFromDeviceEvent) {
+                    "请根据以上用户动向决定是否发消息。没什么好说的就回复 [PASS]。"
+                } else {
+                    "请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。"
+                }
 
-                // 应用输入转换器
-                val processedUserMessage = listOf(userMessage).transforms(
+                // 输入转换器必须看到完整的 System + history + wake-up 列表：
+                // - 世界书的 scanDepth/关键词匹配才能读取正确的历史上下文；
+                // - BEFORE/AFTER/TOP/BOTTOM/AT_DEPTH 都可能改变列表或插入多条消息。
+                // 绝不能在转换后取 first()/last()，否则会丢掉唤醒指令或注入内容。
+                val messages = buildProactiveModelMessages(
+                    messages = buildProactiveInputMessages(
+                        systemPrompt = systemPrompt,
+                        historyMessages = historyMessages,
+                        wakeupInstruction = wakeupInstruction,
+                    ),
                     transformers = inputTransformers + templateTransformer,
                     context = this@ProactiveMessageTriggerService,
                     model = model,
                     assistant = assistant,
-                    settings = settings
-                ).first()
-
-                // 组合完整消息列表：System + History + User Context
-                // 合并相邻同角色消息（包括 history 末尾与合成 User 消息之间可能出现的 USER-USER 相邻），避免 400
-                val messages = mergeAdjacentSameRoleMessages(
-                    buildList {
-                        add(UIMessage(
-                            role = MessageRole.SYSTEM,
-                            parts = listOf(UIMessagePart.Text(systemPrompt))
-                        ))
-                        addAll(historyMessages)
-                        add(processedUserMessage)
-                    }
+                    settings = settings,
                 )
 
                 // 直接调用 AI API 生成消息
@@ -883,6 +933,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 appendLine()
                 appendLine("## ⚠️ 当前触发原因：用户手机动向（设备事件触发）")
                 appendLine("你是因为检测到用户的手机操作动向（切换应用/亮屏锁屏/回桌面）而被触发的。")
+                appendLine(PROGRAMMATIC_WAKEUP_MARKER)
                 appendLine("请特别注意：这是设备事件触发，不是定时主动消息。根据用户的手机操作动向来决定是否发消息。")
                 appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
                 appendLine("请根据用户的动向，自然地决定是否主动发一条消息。距离用户上次回复已过去 $idleMinutes 分钟。")
@@ -899,6 +950,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 appendLine()
                 appendLine("## 主动消息触发（定时触发）")
                 appendLine("距离用户上次回复已过去 $idleMinutes 分钟。")
+                appendLine(PROGRAMMATIC_WAKEUP_MARKER)
                 appendLine("这是定时触发的主动消息，不是设备事件触发。")
                 appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
                 appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
@@ -1079,24 +1131,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             if (!hasPendingTools) return@filterNot false
             val hasResumableTool = tools.any { !it.isExecuted && it.approvalState.canResumeToolExecution() }
             !hasResumableTool
-        }
-    }
-
-    /**
-     * 合并相邻同角色消息（ASSISTANT-ASSISTANT / USER-USER 都要合并），
-     * 避免相邻同角色消息触发 Anthropic 等 API 的 400 错误
-     * （"roles must alternate between user and assistant"）。
-     * SYSTEM 角色在本文件的消息列表里只会出现一次（列表最前面），不会与自身相邻，无需特殊处理。
-     */
-    private fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMessage> {
-        if (messages.size < 2) return messages
-        return messages.fold(emptyList()) { acc, msg ->
-            val prev = acc.lastOrNull()
-            if (prev != null && prev.role == msg.role) {
-                acc.dropLast(1) + prev.copy(parts = prev.parts + msg.parts)
-            } else {
-                acc + msg
-            }
         }
     }
 

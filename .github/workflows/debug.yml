@@ -1,0 +1,245 @@
+name: Debug Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      compare_baseline:
+        description: Compare master and this ref in the same runner
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    paths:
+      - "app/**"
+      - "ai/**"
+      - "common/**"
+      - "document/**"
+      - "web/**"
+      - "web-ui/**"
+      - "gradle/**"
+      - "*.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - ".github/workflows/debug.yml"
+  push:
+    branches:
+      - master
+      - "fix/**"
+    paths:
+      - "app/**"
+      - "ai/**"
+      - "common/**"
+      - "document/**"
+      - "web/**"
+      - "web-ui/**"
+      - "gradle/**"
+      - "*.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - ".github/workflows/debug.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize Material Color Utilities submodule
+        run: git submodule update --init --depth 1 material3/material-color-utilities
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web-ui/pnpm-lock.yaml
+
+      - name: Install web UI dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web-ui
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore stable test debug keystore
+        id: debug-keystore-cache
+        uses: actions/cache@v4
+        with:
+          path: app/debug.keystore
+          key: orangechat-debug-keystore-v1
+
+      - name: Create stable test debug keystore
+        if: steps.debug-keystore-cache.outputs.cache-hit != 'true'
+        run: |
+          # This key is only for co-installable debug/test APKs; it is not a release key.
+          # actions/cache preserves it for later builds without storing a personal secret.
+          keytool -genkeypair -v \
+            -keystore app/debug.keystore \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Run unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Assemble Debug APK
+        id: assemble-debug
+        if: always()
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Upload unit-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-test-reports-${{ github.sha }}
+          path: |
+            app/build/test-results/testDebugUnitTest/**
+            app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Debug APK
+        if: always() && steps.assemble-debug.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangechat-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Save stable test debug keystore
+        if: always() && steps.debug-keystore-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: app/debug.keystore
+          key: orangechat-debug-keystore-v1
+
+  proactive-baseline-compare:
+    if: github.event_name == 'workflow_dispatch' && inputs.compare_baseline == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out baseline
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: before
+          fetch-depth: 1
+
+      - name: Check out candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          path: after
+          fetch-depth: 1
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: |
+            before/web-ui/pnpm-lock.yaml
+            after/web-ui/pnpm-lock.yaml
+
+      - name: Initialize required submodules
+        run: |
+          git -C before submodule update --init --depth 1 material3/material-color-utilities
+          git -C after submodule update --init --depth 1 material3/material-color-utilities
+
+      - name: Install baseline web UI dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: before/web-ui
+
+      - name: Install candidate web UI dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: after/web-ui
+
+      - name: Run baseline unit tests
+        id: baseline-tests
+        continue-on-error: true
+        working-directory: before
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Run candidate unit tests
+        id: candidate-tests
+        continue-on-error: true
+        working-directory: after
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Write comparison summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Proactive test baseline comparison"
+            echo ""
+            echo "- Baseline ref: \`master\`"
+            echo "- Candidate ref: \`${{ github.ref_name }}\`"
+            echo "- Baseline Gradle result: \`${{ steps.baseline-tests.outcome }}\`"
+            echo "- Candidate Gradle result: \`${{ steps.candidate-tests.outcome }}\`"
+            echo ""
+            echo "JUnit XML reports are uploaded separately for before/after inspection."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload baseline reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proactive-baseline-reports-before-${{ github.run_id }}
+          path: |
+            before/app/build/test-results/testDebugUnitTest/**
+            before/app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload candidate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proactive-baseline-reports-after-${{ github.run_id }}
+          path: |
+            after/app/build/test-results/testDebugUnitTest/**
+            after/app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: ignore
+          retention-days: 14
