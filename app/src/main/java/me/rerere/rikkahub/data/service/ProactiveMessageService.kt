@@ -608,7 +608,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // - 世界书的 scanDepth/关键词匹配才能读取正确的历史上下文；
                 // - BEFORE/AFTER/TOP/BOTTOM/AT_DEPTH 都可能改变列表或插入多条消息。
                 // 绝不能在转换后取 first()/last()，否则会丢掉唤醒指令或注入内容。
-                val messages = buildProactiveInputMessages(
+                val transformedMessages = buildProactiveInputMessages(
                     systemPrompt = systemPrompt,
                     historyMessages = historyMessages,
                     wakeupInstruction = wakeupInstruction,
@@ -622,7 +622,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 // 保留转换后的完整列表，再合并相邻同角色消息。
                 // 合并相邻同角色消息（包括 history 末尾与合成 User 消息之间可能出现的 USER-USER 相邻），避免 400
-                val messages = mergeAdjacentSameRoleMessages(messages)
+                val messages = mergeAdjacentSameRoleMessages(transformedMessages)
 
                 // 直接调用 AI API 生成消息
                 val providerSetting = model.findProvider(settings.providers)
