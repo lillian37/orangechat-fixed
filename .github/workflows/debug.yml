@@ -8,6 +8,8 @@ on:
       - "ai/**"
       - "common/**"
       - "document/**"
+      - "web/**"
+      - "web-ui/**"
       - "gradle/**"
       - "*.gradle.kts"
       - "gradle.properties"
@@ -22,6 +24,8 @@ on:
       - "ai/**"
       - "common/**"
       - "document/**"
+      - "web/**"
+      - "web-ui/**"
       - "gradle/**"
       - "*.gradle.kts"
       - "gradle.properties"
@@ -46,6 +50,23 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web-ui/pnpm-lock.yaml
+
+      - name: Install web UI dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web-ui
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
