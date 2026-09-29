@@ -26,31 +26,33 @@ class TemplateTransformer(
         messages: List<UIMessage>,
     ): List<UIMessage> {
         val template = engine.getTemplate(ctx.assistant.id.toString())
-        return messages.map { message ->
-            message.copy(
-                parts = message.parts.map { part ->
-                    when (part) {
-                        is UIMessagePart.Text -> {
-                            val result = StringWriter()
-                            template.evaluate(
-                                result, mapOf(
-                                    "message" to part.text,
-                                    "role" to message.role.name.lowercase(),
-                                    "time" to Instant.now().toLocalTime(),
-                                    "date" to Instant.now().toLocalDate(),
-                                )
-                            )
-                            part.copy(
-                                text = result.toString()
-                            )
-                        }
-
-                        else -> part
-                    }
-                }
+        return transformMessageTemplates(messages) { message, text ->
+            val result = StringWriter()
+            template.evaluate(
+                result, mapOf(
+                    "message" to text,
+                    "role" to message.role.name.lowercase(),
+                    "time" to Instant.now().toLocalTime(),
+                    "date" to Instant.now().toLocalDate(),
+                )
             )
+            result.toString()
         }
     }
+}
+
+internal fun transformMessageTemplates(
+    messages: List<UIMessage>,
+    renderText: (message: UIMessage, text: String) -> String,
+): List<UIMessage> = messages.map { message ->
+    message.copy(
+        parts = message.parts.map { part ->
+            when (part) {
+                is UIMessagePart.Text -> part.copy(text = renderText(message, part.text))
+                else -> part
+            }
+        }
+    )
 }
 
 class AssistantTemplateLoader(private val settingsStore: SettingsStore) : Loader<String> {

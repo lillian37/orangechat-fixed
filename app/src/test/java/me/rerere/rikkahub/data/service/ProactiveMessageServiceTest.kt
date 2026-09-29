@@ -7,8 +7,6 @@
 package me.rerere.rikkahub.data.service
 
 import android.content.ContextWrapper
-import io.pebbletemplates.pebble.PebbleEngine
-import io.pebbletemplates.pebble.loader.Loader
 import kotlinx.coroutines.runBlocking
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.Model
@@ -16,8 +14,9 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.PromptInjectionTransformer
-import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.ai.transformers.TimeReminderTransformer
+import me.rerere.rikkahub.data.ai.transformers.TransformerContext
+import me.rerere.rikkahub.data.ai.transformers.transformMessageTemplates
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.InjectionPosition
@@ -26,8 +25,6 @@ import me.rerere.rikkahub.data.model.PromptInjection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.Reader
-import java.io.StringReader
 import kotlin.uuid.Uuid
 
 class ProactiveMessageServiceTest {
@@ -50,29 +47,13 @@ class ProactiveMessageServiceTest {
         constantActive = true,
     )
 
-    private val templateTransformer: TemplateTransformer by lazy {
-        val templateText = "[{{ role }}] {{ message }}"
-        val loader = object : Loader<String> {
-            override fun getReader(cacheKey: String?): Reader = StringReader(templateText)
-
-            override fun setCharset(charset: String?) = Unit
-
-            override fun setPrefix(prefix: String?) = Unit
-
-            override fun setSuffix(suffix: String?) = Unit
-
-            override fun resolveRelativePath(relativePath: String?, anchorPath: String?): String? = relativePath
-
-            override fun createCacheKey(templateName: String?): String? = templateName
-
-            override fun resourceExists(templateName: String?): Boolean = true
+    private val templateTransformer = object : InputMessageTransformer {
+        override suspend fun transform(
+            ctx: TransformerContext,
+            messages: List<UIMessage>,
+        ): List<UIMessage> = transformMessageTemplates(messages) { message, text ->
+            "[${message.role.name.lowercase()}] $text"
         }
-        TemplateTransformer(
-            PebbleEngine.Builder()
-                .loader(loader)
-                .autoEscaping(false)
-                .build()
-        )
     }
 
     private fun runProactivePipeline(
