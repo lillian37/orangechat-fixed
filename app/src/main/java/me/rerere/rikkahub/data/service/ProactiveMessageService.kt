@@ -111,6 +111,42 @@ internal fun buildProactiveInputMessages(
     add(UIMessage.user("$PROGRAMMATIC_WAKEUP_MARKER\n$wakeupInstruction"))
 }
 
+/**
+ * Apply the same input-transform and role-normalization boundary used before a proactive model
+ * call. Keeping this as one testable boundary prevents tests from only checking an intermediate
+ * lorebook result while the actual model input still loses a message later in the pipeline.
+ */
+internal suspend fun buildProactiveModelMessages(
+    messages: List<UIMessage>,
+    transformers: List<InputMessageTransformer>,
+    context: Context,
+    model: Model,
+    assistant: Assistant,
+    settings: Settings,
+): List<UIMessage> {
+    val transformedMessages = messages.transforms(
+        transformers = transformers,
+        context = context,
+        model = model,
+        assistant = assistant,
+        settings = settings,
+    )
+    return mergeAdjacentSameRoleMessages(transformedMessages)
+}
+
+/** Merge adjacent roles before handing messages to providers that require alternating roles. */
+internal fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMessage> {
+    if (messages.size < 2) return messages
+    return messages.fold(emptyList()) { acc, msg ->
+        val prev = acc.lastOrNull()
+        if (prev != null && prev.role == msg.role) {
+            acc.dropLast(1) + prev.copy(parts = prev.parts + msg.parts)
+        } else {
+            acc + msg
+        }
+    }
+}
+
 class ProactiveMessageService : KoinComponent {
     private val settingsStore: SettingsStore by inject()
     private val conversationRepository: ConversationRepository by inject()
@@ -608,21 +644,18 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // - 世界书的 scanDepth/关键词匹配才能读取正确的历史上下文；
                 // - BEFORE/AFTER/TOP/BOTTOM/AT_DEPTH 都可能改变列表或插入多条消息。
                 // 绝不能在转换后取 first()/last()，否则会丢掉唤醒指令或注入内容。
-                val transformedMessages = buildProactiveInputMessages(
-                    systemPrompt = systemPrompt,
-                    historyMessages = historyMessages,
-                    wakeupInstruction = wakeupInstruction,
-                ).transforms(
+                val messages = buildProactiveModelMessages(
+                    messages = buildProactiveInputMessages(
+                        systemPrompt = systemPrompt,
+                        historyMessages = historyMessages,
+                        wakeupInstruction = wakeupInstruction,
+                    ),
                     transformers = inputTransformers + templateTransformer,
                     context = this@ProactiveMessageTriggerService,
                     model = model,
                     assistant = assistant,
-                    settings = settings
+                    settings = settings,
                 )
-
-                // 保留转换后的完整列表，再合并相邻同角色消息。
-                // 合并相邻同角色消息（包括 history 末尾与合成 User 消息之间可能出现的 USER-USER 相邻），避免 400
-                val messages = mergeAdjacentSameRoleMessages(transformedMessages)
 
                 // 直接调用 AI API 生成消息
                 val providerSetting = model.findProvider(settings.providers)
@@ -1098,24 +1131,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             if (!hasPendingTools) return@filterNot false
             val hasResumableTool = tools.any { !it.isExecuted && it.approvalState.canResumeToolExecution() }
             !hasResumableTool
-        }
-    }
-
-    /**
-     * 合并相邻同角色消息（ASSISTANT-ASSISTANT / USER-USER 都要合并），
-     * 避免相邻同角色消息触发 Anthropic 等 API 的 400 错误
-     * （"roles must alternate between user and assistant"）。
-     * SYSTEM 角色在本文件的消息列表里只会出现一次（列表最前面），不会与自身相邻，无需特殊处理。
-     */
-    private fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMessage> {
-        if (messages.size < 2) return messages
-        return messages.fold(emptyList()) { acc, msg ->
-            val prev = acc.lastOrNull()
-            if (prev != null && prev.role == msg.role) {
-                acc.dropLast(1) + prev.copy(parts = prev.parts + msg.parts)
-            } else {
-                acc + msg
-            }
         }
     }
 

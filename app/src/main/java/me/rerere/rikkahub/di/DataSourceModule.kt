@@ -126,7 +126,7 @@ val dataSourceModule = module {
             .build()
     }
 
-    single { TemplateTransformer(engine = get(), settingsStore = get()) }
+    single { TemplateTransformer(engine = get()) }
 
     single {
         get<AppDatabase>().conversationDao()

@@ -1,0 +1,121 @@
+name: Proactive Test Baseline Comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Ref to test as the before-change baseline
+        required: true
+        default: master
+      head_ref:
+        description: Ref to test as the after-change version
+        required: true
+        default: fix/proactive-wakeup
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_ref }}
+          path: before
+          fetch-depth: 1
+
+      - name: Check out candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_ref }}
+          path: after
+          fetch-depth: 1
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: |
+            before/web-ui/pnpm-lock.yaml
+            after/web-ui/pnpm-lock.yaml
+
+      - name: Initialize required submodules
+        run: |
+          git -C before submodule update --init --depth 1 material3/material-color-utilities
+          git -C after submodule update --init --depth 1 material3/material-color-utilities
+
+      - name: Install baseline web UI dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: before/web-ui
+
+      - name: Install candidate web UI dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: after/web-ui
+
+      - name: Run baseline unit tests
+        id: baseline-tests
+        continue-on-error: true
+        working-directory: before
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Run candidate unit tests
+        id: candidate-tests
+        continue-on-error: true
+        working-directory: after
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Write comparison summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Proactive test baseline comparison"
+            echo ""
+            echo "- Baseline ref: \`${{ inputs.base_ref }}\`"
+            echo "- Candidate ref: \`${{ inputs.head_ref }}\`"
+            echo "- Baseline Gradle result: \`${{ steps.baseline-tests.outcome }}\`"
+            echo "- Candidate Gradle result: \`${{ steps.candidate-tests.outcome }}\`"
+            echo ""
+            echo "JUnit XML reports are uploaded separately for before/after inspection."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload baseline reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proactive-baseline-reports-before-${{ github.run_id }}
+          path: |
+            before/app/build/test-results/testDebugUnitTest/**
+            before/app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload candidate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proactive-baseline-reports-after-${{ github.run_id }}
+          path: |
+            after/app/build/test-results/testDebugUnitTest/**
+            after/app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: ignore
+          retention-days: 14
