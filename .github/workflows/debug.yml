@@ -132,6 +132,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Save stable test debug keystore
+        if: always() && steps.debug-keystore-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: app/debug.keystore
+          key: orangechat-debug-keystore-v1
+
   proactive-baseline-compare:
     if: github.event_name == 'workflow_dispatch' && inputs.compare_baseline == true
     runs-on: ubuntu-latest
