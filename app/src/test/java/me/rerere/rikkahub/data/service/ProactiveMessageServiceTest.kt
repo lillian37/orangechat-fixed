@@ -50,9 +50,8 @@ class ProactiveMessageServiceTest {
         constantActive = true,
     )
 
-    private fun templateTransformer(
-        templateText: String = "[{{ role }}] {{ message }}",
-    ): TemplateTransformer {
+    private val templateTransformer: TemplateTransformer by lazy {
+        val templateText = "[{{ role }}] {{ message }}"
         val loader = object : Loader<String> {
             override fun getReader(cacheKey: String?): Reader = StringReader(templateText)
 
@@ -68,7 +67,7 @@ class ProactiveMessageServiceTest {
 
             override fun resourceExists(templateName: String?): Boolean = true
         }
-        return TemplateTransformer(
+        TemplateTransformer(
             PebbleEngine.Builder()
                 .loader(loader)
                 .autoEscaping(false)
@@ -97,7 +96,7 @@ class ProactiveMessageServiceTest {
                 TimeReminderTransformer,
                 PromptInjectionTransformer,
                 *extraTransformers.toTypedArray(),
-                templateTransformer(),
+                templateTransformer,
             ),
             context = ContextWrapper(null),
             model = Model(modelId = "test-model", displayName = "Test model"),
